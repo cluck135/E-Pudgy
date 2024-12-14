@@ -1,13 +1,15 @@
 /*
  * See documentation at https://nRF24.github.io/RF24
  * See License information at root directory of this library
- * Author: Brendan Doherty (2bndy5)
+ *  Author: Brendan Doherty (2bndy5)
  */
 
-#include <SPI.h>
+#include<SPI.h>
 #include "printf.h"
 #include "RF24.h"
+#include <Wire.h>
 
+#define JOYSTICK_ADDR 0x40
 #define CE_PIN 9
 #define CSN_PIN 10
 // instantiate an object for the nRF24L01 transceiver
@@ -27,23 +29,22 @@ String bind = address[radioNumber]; // setting up our bind address
 // Used to control whether this node is sending or receiving
 bool role = true;  // true = TX role, false = RX role
 
-// For this
-// NEW SKETCH
-// s example, we'll be using a payload containing
-// a single float number that will be incremented
-// on every successful transmission
 int payload[] = { 100, 9, 9 };
 
 int switchPin = 5;
-unsigned long buttonPressStart = 0; // Timer variable
+unsigned long buttonPressStart = 0; // Cruise Control Start Time
 const unsigned long holdTime = 5000; // 5 seconds in milliseconds
 bool inCruiseMode = false;
+int cruiseLED = 2;
 
 int ForwardBackward;
 int ForwardBackwardLOCK;
 int RightLeft;
 int RightLeftLOCK;
 int switchPos;
+
+int LeftMotorSpeed = 1500;
+int RightMotorSpeed = 1500;
 
 int TransistorBasePin = 3;
 
@@ -55,19 +56,13 @@ void setup() {
     // some boards need to wait to ensure access to serial over USB
   }
 
-  // setup our throttle
-  pinMode(ForwardBackwardPotPin, INPUT);
-  pinMode(TurningPotPin, INPUT);
+  Wire.begin();
 
   // initialize the transceiver on the SPI bus
   if (!radio.begin()) {
     Serial.println(F("radio hardware is not responding!!"));
     while (1) {}  // hold in infinite loop
   }
-
-  // print example's introductory prompt
-  // Serial.println(F("RF24/examples/GettingStarted"));
-
   // To set the radioNumber via the Serial monitor on startup
   // Serial.println(F("Which radio is this? Enter '0' or '1'. Defaults to '0'"));
   // while (!Serial.available()) {
@@ -108,67 +103,24 @@ void setup() {
   // printf_begin();             // needed only once for printing details
   // radio.printDetails();       // (smaller) function that prints raw register values
   // radio.printPrettyDetails(); // (larger) function that prints human readable data
-  digitalWrite(switchPin, LOW);  // set HIGH so we can read the pull down resistor value of 1 come through
+  digitalWrite(switchPin, LOW);  // set LOW to detect HIGH signal from 
 }  // setup
 
 void loop() {
-   Wire.beginTransmission(JOYSTICK_ADDR);
-  Wire.write(0x00);  // Register to start reading from (verify if this is correct)
+  delay(500);
+
+  Wire.beginTransmission(JOYSTICK_ADDR);
+  Wire.write(0x00);  // Register to start reading from
   Wire.endTransmission(false);
 
   Wire.requestFrom(JOYSTICK_ADDR, 2);  // Request 2 bytes (X and Y axis data)
 
-  if (Wire.available() == 2) {
-    byte xData = Wire.read();  // Read X axis data
-    byte yData = Wire.read();  // Read Y axis data
-
-    int mappedX = 0;
-    int mappedY = 0;
-
-    // Map X-axis (North-South)
-    if (xData <= 80) {  // North side
-      mappedX = map(xData, 0, 80, 1000, 2000);  // Map 0-80 to 1000-2000
-    } else if (xData >= 176) {  // South side
-      mappedX = map(xData, 175, 255, 1000, 2000);  // Map 255-176 to 1000-2000
-    } else {
-      mappedX = 1500;  // Center position
-    }
-
-    // Map Y-axis (East-West)
-    if (yData <= 80) {  // East side
-      mappedY = map(yData, 0, 80, 1000, 2000);  // Map 0-80 to 1000-2000
-    } else if (yData >= 176) {  // West side
-      mappedY = map(yData, 255, 176, 1000, 2000);  // Map 255-176 to 1000-2000
-    } else {
-      mappedY = 1000;  // Center position
-    }
-
-    // Print the raw and mapped values for both axes
-    Serial.print("X Raw: ");
-    Serial.print(xData);
-    Serial.print(" Mapped X: ");
-    Serial.print(mappedX);
-
-    Serial.print(" | Y Raw: ");
-    Serial.print(yData);
-    Serial.print(" Mapped Y: ");
-    Serial.println(mappedY);
-  }
-
-  delay(100);  // Delay for readability
-
   int inputRead = digitalRead(5);
-  if (inputRead == HIGH) {
-    digitalWrite(2, HIGH);
-  } 
-
-
 
   int PWM[3];
   bool report;
 
   switchPos = digitalRead(switchPin);
-  Serial.println(switchPos);
    if (!inCruiseMode && switchPos) {
         // If button press just started, record the start time
         if (buttonPressStart == 0) {
@@ -176,19 +128,37 @@ void loop() {
         }
         // Check if button is held for more than 5 seconds
         if (millis() - buttonPressStart >= holdTime && !inCruiseMode) {
-            inCruiseMode = true;       // Activate cruise mode
-            //digitalWrite(cruiseLED, HIGH); // Turn on cruise mode LED
+            inCruiseMode = true; // Activate cruise mode
+            digitalWrite(cruiseLED, HIGH); // Turn on cruise mode LED
             Serial.println("Cruise mode activated!");
             while (switchPos) {
-              ForwardBackwardLOCK = analogRead(ForwardBackwardPotPin);
-              RightLeftLOCK = analogRead(TurningPotPin);
-              ForwardBackwardLOCK = map(ForwardBackwardLOCK, 0, 1023, 1000, 2000);
-              RightLeftLOCK = map(RightLeftLOCK, 0, 1023, 1000, 2000);
-              switchPos = digitalRead(switchPin);
-              PWM[0] = ForwardBackwardLOCK;
-              PWM[1] = RightLeftLOCK;
+
+              if (Wire.available() == 2) {
+                  byte xData = Wire.read();  // Read X axis data
+                  byte yData = Wire.read();  // Read Y axis data
+                  //  X-axis (North-South)
+                  if (xData <= 80) {  // East side
+                      if (yData <= 80) {  // North-East 
+                        LeftMotorSpeed = 2000; // set to static full throttle on left motor
+                        RightMotorSpeed = map(xData, 0, 80, 2000, 1000);  // Map right motor speed 0-80 to 2000-1000
+                      } else if (yData >= 175) {  // South-East side
+                        LeftMotorSpeed = map(yData, 255, 175, 2000, 1000);  // Map left motor speed 255-175 to 2000-1000
+                        RightMotorSpeed = 1000; // set to static full reverse on right motor
+                      } 
+                  } else if (xData >= 175) {  // West side
+                      if (yData <= 80) {  // North-West side
+                        RightMotorSpeed = 2000; // set to static full throttle on right motor
+                        LeftMotorSpeed = map(yData, 0, 80, 1000, 2000);  // Map left motor speed 0-80 to 1000-2000
+                      } else if (yData >= 176) {  // South-West side
+                        RightMotorSpeed = map(xData, 255, 176, 1000, 2000);  // Map right motor speed 255-176 to 1000-2000
+                        LeftMotorSpeed = 1000;  // set to static full reverse on left motor
+                      }
+                  }
+                PWM[0] = RightMotorSpeed
+                PWM[1] = LeftMotorSpeed
+            }
               // blink the button led on
-            }          
+          }          
         }
     } else {
       buttonPressStart = 0;
@@ -200,81 +170,71 @@ void loop() {
     // in cruise control. could add small time buffer after button release just to give some flexibility.
     // maybe have another button or something to add improved functionality?
 
-    if (inCruiseMode && !switchPos) { 
-      PWM[2] = switchPos;
+    if (inCruiseMode && !switchPos) { // Cruise Control Constant Speed
       report = radio.write(&PWM, sizeof(PWM));
         if (report) {
           Serial.print(F("Transmission successful! "));  // payload was delivered
-          Serial.print("Forward Backward: ");
+          Serial.print("Left Motor: ");
           Serial.println(PWM[0]);  // print payload sent
-          Serial.print("Right Left: ");
+          Serial.print("Right Motor: ");
           Serial.println(PWM[1]);
-          Serial.print("Switch Val: ");
-          Serial.println(PWM[2]);
         } else {
           Serial.println(F("Transmission failed or timed out"));  // payload was not delivered
         }
     } else if (inCruiseMode && switchPos) {
       inCruiseMode = false;
+      digitalWrite(cruiseLED, LOW);
     }
 
   // This device is a TX node
   if (!inCruiseMode) {
-  ForwardBackward = analogRead(ForwardBackwardPotPin);
-  RightLeft = analogRead(TurningPotPin);
-  // Serial.println(ForwardBackward);
-  // Serial.println(RightLeft);
-  // Serial.println(switchPos);
-  ForwardBackward = map(ForwardBackward, 0, 1023, 1000, 2000);
-  RightLeft = map(RightLeft, 0, 1023, 1000, 2000);
-  // Serial.print("ForwardBackward: ");
-  // Serial.println(ForwardBackward);
-  // Serial.print("RightLeft: ");
-  // Serial.println(RightLeft);
+    if (Wire.available() == 2) {
+          byte xData = Wire.read();  // Read X axis data
+          byte yData = Wire.read();  // Read Y axis data
 
-  PWM[0] = ForwardBackward;
- // PWM[1] = RightLeft;
-  //PWM[2] = switchPos;
+          //  X-axis (North-South)
+          if (xData <= 80) {  // East side
+              if (yData <= 80) {  // North-East 
+                LeftMotorSpeed = 2000; // set to static full throttle on left motor
+                RightMotorSpeed = map(xData, 0, 80, 2000, 1000);  // Map right motor speed 0-80 to 2000-1000
+              } else if (yData >= 175) {  // South-East side
+                LeftMotorSpeed = map(yData, 255, 175, 2000, 1000);  // Map left motor speed 255-175 to 2000-1000
+                RightMotorSpeed = 1000; // set to static full reverse on right motor
+              } 
+          } else if (xData >= 175) {  // West side
+              if (yData <= 80) {  // North-West side
+                RightMotorSpeed = 2000; // set to static full throttle on right motor
+                LeftMotorSpeed = map(yData, 0, 80, 1000, 2000);  // Map left motor speed 0-80 to 1000-2000
+              } else if (yData >= 176) {  // South-West side
+                RightMotorSpeed = map(xData, 255, 176, 1000, 2000);  // Map right motor speed 255-176 to 1000-2000
+                LeftMotorSpeed = 1000;  // set to static full reverse on left motor
+              }
+          }
 
-  //unsigned long start_timer = micros();          // start the timer
-  bool report = radio.write(&PWM, sizeof(PWM));  // transmit & save the report
-  //unsigned long end_timer = micros();            // end the timer
+          // Print the raw values from Joystick 0-80 and 255-175
+          // Serial.print("X Raw: ");
+          // Serial.print(xData);
+          Serial.print(" Right Motor: ");
+          Serial.print(RightMotorSpeed);
+
+          // Serial.print(" | Y Raw: ");
+          // Serial.print(yData);
+          Serial.print(" Left Motor: ");
+          Serial.println(LeftMotorSpeed);
+    }
+
+    PWM[0] = RightMotorSpeed;
+    PWM[1] = LeftMotorSpeed;
+
+    bool report = radio.write(&PWM, sizeof(PWM));  // transmit & save the report
 
     if (report) {
       Serial.println(F("Transmission successful! "));  // payload was delivered
-      // Serial.print(F("Time to transmit = "));
-      // Serial.print(end_timer - start_timer);  // print the timer result
-      // Serial.println(F(" us. Sent: "));
       Serial.println(PWM[0]);  // print payload sent
       Serial.println(PWM[1]);
-      // Serial.print("Switch Val: ");
-      Serial.println(PWM[2]);
     } else {
       Serial.println(F("Transmission failed or timed out"));  // payload was not delivered
     }
   }
-  // to make this example readable in the serial monitor
-  //delay(1000);  // slow transmissions down by 1 second
-
-
-  // if (Serial.available()) {
-  //   // change the role via the serial monitor
-
-  //   char c = toupper(Serial.read());
-  //   if (c == 'T' && !role) {
-  //     // Become the TX node
-
-  //     role = true;
-  //     Serial.println(F("*** CHANGING TO TRANSMIT ROLE -- PRESS 'R' TO SWITCH BACK"));
-  //     radio.stopListening();
-
-  //   } else if (c == 'R' && role) {
-  //     // Become the RX node
-
-  //     role = false;
-  //     Serial.println(F("*** CHANGING TO RECEIVE ROLE -- PRESS 'T' TO SWITCH BACK"));
-  //     radio.startListening();
-  //   }
-  // }
 
 }  // loop
